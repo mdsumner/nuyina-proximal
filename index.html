@@ -22,9 +22,9 @@
     <strong>Nuyina Tracker</strong>
     <div id="info">Loading...</div>
     <label>Records: <span class="val" id="countVal">200</span></label>
-    <input type="range" id="count" min="50" max="20000" step="50" value="200">
+    <input type="range" id="count" min="50" max="40000" step="50" value="200">
     <label>Interval (min): <span class="val" id="intervalVal">10</span></label>
-    <input type="range" id="interval" min="1" max="600" step="1" value="10">
+    <input type="range" id="interval" min="1" max="1800" step="10" value="10">
     <label><input type="checkbox" id="showCrow" checked> Show crow lines</label>
     <label><input type="checkbox" id="useGC"> Great circle</label>
     <button id="refresh">Refresh</button>
@@ -40,6 +40,17 @@
     const homeMarker = L.marker(home).addTo(map).bindPopup('Home');
 
     let trackLayer = L.layerGroup().addTo(map);
+
+    // haversine distance in km
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
 
     function loadTrack() {
       const count = document.getElementById('count').value;
@@ -78,11 +89,23 @@
             }
           }
 
-          // track line
+          // build track line and calculate actual distance
           const trackLine = selected.map(f => {
             const c = f.geometry.coordinates[0];
             return [c[1], c[0]];
           });
+
+          let actualDist = 0;
+          for (let i = 1; i < trackLine.length; i++) {
+            actualDist += haversine(trackLine[i-1][0], trackLine[i-1][1],
+                                    trackLine[i][0], trackLine[i][1]);
+          }
+
+          // GC distance from start to end of track
+          const startPos = trackLine[trackLine.length - 1];  // oldest point
+          const endPos = trackLine[0];  // newest point
+          const gcDist = haversine(startPos[0], startPos[1], endPos[0], endPos[1]);
+
           L.polyline(trackLine, {color: 'red', weight: 2, opacity: 0.6}).addTo(trackLayer);
 
           // markers and crow lines
@@ -115,18 +138,19 @@
 
           map.fitBounds([home, latestPos, trackLine[trackLine.length - 1]], {padding: [50, 50]});
 
-          // distance calc
-          const R = 6371;
-          const dLat = (latestPos[0] - home[0]) * Math.PI / 180;
-          const dLon = (latestPos[1] - home[1]) * Math.PI / 180;
-          const a = Math.sin(dLat/2)**2 + Math.cos(home[0]*Math.PI/180) *
-                    Math.cos(latestPos[0]*Math.PI/180) * Math.sin(dLon/2)**2;
-          const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+          // distance to home
+          const distToHome = haversine(latestPos[0], latestPos[1], home[0], home[1]);
+
+          // ratio
+          const ratio = ((actualDist / gcDist - 1) * 100).toFixed(1);
 
           document.getElementById('info').innerHTML =
             `${latestTime.toLocaleString()}<br>` +
-            `${dist.toFixed(1)} km away<br>` +
-            `<small>${selected.length} points</small>`;
+            `${distToHome.toFixed(1)} km to home<br>` +
+            `<small>${selected.length} points</small><hr>` +
+            `<b>Track:</b> ${actualDist.toFixed(0)} km<br>` +
+            `<b>GC:</b> ${gcDist.toFixed(0)} km<br>` +
+            `<b>Extra:</b> +${ratio}%`;
         })
         .catch(e => document.getElementById('info').innerHTML = 'Error: ' + e);
     }
