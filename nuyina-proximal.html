@@ -4,15 +4,31 @@
   <title>Nuyina Tracker</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.geodesic@2.7.1/dist/leaflet.geodesic.umd.min.js"></script>
   <style>
     html, body, #map { height: 100%; margin: 0; }
-    #info { position: absolute; top: 10px; right: 10px; background: white;
-            padding: 10px; z-index: 1000; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+    #controls { position: absolute; top: 10px; right: 10px; background: white;
+                padding: 12px; z-index: 1000; border-radius: 4px;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.3); font-family: sans-serif; font-size: 14px; }
+    #controls label { display: block; margin: 8px 0 4px; }
+    #controls input[type=range] { width: 100%; }
+    #controls button { margin-top: 10px; width: 100%; padding: 6px; }
+    .val { float: right; font-weight: bold; }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <div id="info">Loading...</div>
+  <div id="controls">
+    <strong>Nuyina Tracker</strong>
+    <div id="info">Loading...</div>
+    <label>Records: <span class="val" id="countVal">200</span></label>
+    <input type="range" id="count" min="50" max="20000" step="50" value="200">
+    <label>Interval (min): <span class="val" id="intervalVal">10</span></label>
+    <input type="range" id="interval" min="1" max="600" step="1" value="10">
+    <label><input type="checkbox" id="showCrow" checked> Show crow lines</label>
+    <label><input type="checkbox" id="useGC"> Great circle</label>
+    <button id="refresh">Refresh</button>
+  </div>
   <script>
     const home = [-43.0509891, 147.3423561];
     const map = L.map('map').setView([-43.5, 147.5], 9);
@@ -21,80 +37,112 @@
       attribution: '© OpenStreetMap'
     }).addTo(map);
 
-    L.marker(home).addTo(map).bindPopup('Home');
+    const homeMarker = L.marker(home).addTo(map).bindPopup('Home');
 
-    const wfsUrl = 'https://data.aad.gov.au/geoserver/ows?' + new URLSearchParams({
-      service: 'WFS',
-      version: '2.0.0',
-      request: 'GetFeature',
-      typeName: 'underway:nuyina_underway',
-      outputFormat: 'application/json',
-      sortBy: 'datetime D',
-      count: 2000
+    let trackLayer = L.layerGroup().addTo(map);
+
+    function loadTrack() {
+      const count = document.getElementById('count').value;
+      const interval = document.getElementById('interval').value * 60 * 1000;
+      const showCrow = document.getElementById('showCrow').checked;
+      const useGC = document.getElementById('useGC').checked;
+
+      document.getElementById('countVal').textContent = count;
+      document.getElementById('intervalVal').textContent = document.getElementById('interval').value;
+
+      trackLayer.clearLayers();
+
+      const wfsUrl = 'https://data.aad.gov.au/geoserver/ows?' + new URLSearchParams({
+        service: 'WFS',
+        version: '2.0.0',
+        request: 'GetFeature',
+        typeName: 'underway:nuyina_underway',
+        outputFormat: 'application/json',
+        sortBy: 'datetime D',
+        count: count
+      });
+
+      fetch(wfsUrl)
+        .then(r => r.json())
+        .then(data => {
+          const features = data.features;
+
+          // filter to intervals
+          const selected = [];
+          let lastTime = null;
+          for (const f of features) {
+            const t = new Date(f.properties.datetime);
+            if (!lastTime || (lastTime - t) >= interval) {
+              selected.push(f);
+              lastTime = t;
+            }
+          }
+
+          // track line
+          const trackLine = selected.map(f => {
+            const c = f.geometry.coordinates[0];
+            return [c[1], c[0]];
+          });
+          L.polyline(trackLine, {color: 'red', weight: 2, opacity: 0.6}).addTo(trackLayer);
+
+          // markers and crow lines
+          let latestPos, latestTime;
+          selected.forEach((f, i) => {
+            const coords = f.geometry.coordinates[0];
+            const pos = [coords[1], coords[0]];
+            const dt = new Date(f.properties.datetime);
+            const opacity = 1 - (i / selected.length) * 0.7;
+
+            if (i === 0) {
+              latestPos = pos;
+              latestTime = dt;
+              L.marker(pos, {icon: L.divIcon({html: '🚢', className: '', iconSize: [24, 24]})})
+                .addTo(trackLayer).bindPopup('Nuyina<br>' + dt.toLocaleString());
+            } else {
+              L.circleMarker(pos, {radius: 5, fillColor: 'red', fillOpacity: opacity,
+                                   stroke: false}).addTo(trackLayer);
+            }
+
+            // crow line to home
+            if (showCrow) {
+              if (useGC) {
+                L.geodesic([pos, home], {color: 'blue', weight: 1, opacity: opacity * 0.5}).addTo(trackLayer);
+              } else {
+                L.polyline([pos, home], {color: 'blue', weight: 1, opacity: opacity * 0.5, dashArray: '3,6'}).addTo(trackLayer);
+              }
+            }
+          });
+
+          map.fitBounds([home, latestPos, trackLine[trackLine.length - 1]], {padding: [50, 50]});
+
+          // distance calc
+          const R = 6371;
+          const dLat = (latestPos[0] - home[0]) * Math.PI / 180;
+          const dLon = (latestPos[1] - home[1]) * Math.PI / 180;
+          const a = Math.sin(dLat/2)**2 + Math.cos(home[0]*Math.PI/180) *
+                    Math.cos(latestPos[0]*Math.PI/180) * Math.sin(dLon/2)**2;
+          const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+          document.getElementById('info').innerHTML =
+            `${latestTime.toLocaleString()}<br>` +
+            `${dist.toFixed(1)} km away<br>` +
+            `<small>${selected.length} points</small>`;
+        })
+        .catch(e => document.getElementById('info').innerHTML = 'Error: ' + e);
+    }
+
+    // event listeners
+    document.getElementById('refresh').addEventListener('click', loadTrack);
+    document.getElementById('count').addEventListener('input', () => {
+      document.getElementById('countVal').textContent = document.getElementById('count').value;
     });
+    document.getElementById('interval').addEventListener('input', () => {
+      document.getElementById('intervalVal').textContent = document.getElementById('interval').value;
+    });
+    document.getElementById('showCrow').addEventListener('change', loadTrack);
+    document.getElementById('useGC').addEventListener('change', loadTrack);
 
-    fetch(wfsUrl)
-      .then(r => r.json())
-      .then(data => {
-        const features = data.features;
-
-        // filter to ~10 min intervals working back from most recent
-        const selected = [];
-        let lastTime = null;
-
-        for (const f of features) {
-          const t = new Date(f.properties.datetime);
-          if (!lastTime || (lastTime - t) >= 10 * 60 * 1000) {
-            selected.push(f);
-            lastTime = t;
-          }
-        }
-
-        // draw track line through all points
-        const trackLine = selected.map(f => {
-          const c = f.geometry.coordinates[0];
-          return [c[1], c[0]];
-        });
-        L.polyline(trackLine, {color: 'red', weight: 2, opacity: 0.6}).addTo(map);
-
-        // plot markers with fading opacity
-        let latestPos, latestTime;
-        selected.forEach((f, i) => {
-          const coords = f.geometry.coordinates[0];
-          const pos = [coords[1], coords[0]];
-          const dt = new Date(f.properties.datetime);
-          const opacity = 1 - (i / selected.length) * 0.7;
-
-          if (i === 0) {
-            latestPos = pos;
-            latestTime = dt;
-            L.marker(pos, {icon: L.divIcon({html: '🚢', className: '', iconSize: [24, 24]})})
-              .addTo(map).bindPopup('Nuyina<br>' + dt.toLocaleString());
-          } else {
-            L.circleMarker(pos, {radius: 5, fillColor: 'red', fillOpacity: opacity,
-                                 stroke: false}).addTo(map);
-          }
-        });
-
-        // dashed line to home
-        L.polyline([home, latestPos], {color: 'blue', dashArray: '5,10'}).addTo(map);
-        map.fitBounds([home, latestPos], {padding: [50, 50]});
-
-        // distance calc
-        const R = 6371;
-        const dLat = (latestPos[0] - home[0]) * Math.PI / 180;
-        const dLon = (latestPos[1] - home[1]) * Math.PI / 180;
-        const a = Math.sin(dLat/2)**2 + Math.cos(home[0]*Math.PI/180) *
-                  Math.cos(latestPos[0]*Math.PI/180) * Math.sin(dLon/2)**2;
-        const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-
-        document.getElementById('info').innerHTML =
-          `<b>Nuyina</b><br>` +
-          `${latestTime.toLocaleString()}<br>` +
-          `${dist.toFixed(1)} km away<br>` +
-          `<small>${selected.length} track points</small>`;
-      })
-      .catch(e => document.getElementById('info').innerHTML = 'Error: ' + e);
+    loadTrack();
   </script>
 </body>
 </html>
