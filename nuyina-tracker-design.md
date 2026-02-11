@@ -125,7 +125,7 @@ voyages.json               # auto-detected + hand-edited voyage metadata
 ### Phase 1: Voyage Detection Pipeline (uwy.new)
 
 - [ ] Add `detect_voyages.R` script
-- [ ] GitHub Action: runs on parquet update, outputs `voyages_draft.json`
+- [ ] GitHub Action: runs on parquet updated cache, outputs `voyages_draft.json`
 - [ ] Manual review step: copy/edit to `voyages.json` for publication
 - [ ] Host `voyages.json` alongside parquet in releases
 
@@ -189,7 +189,8 @@ nuyina-tracker/
 
 uwy.new/
 ├── .github/workflows/
-│   └── update.yml      # scheduled parquet + voyage detection
+│   └── update.yml         # scheduled parquet cache (no R) 
+|   └── voyage-detect.yml  # schedule voyage detection (R, or could be alternate see R/detect_voyages.R)
 ├── R/
 │   └── detect_voyages.R
 ├── releases/
